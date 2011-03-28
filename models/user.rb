@@ -39,6 +39,35 @@ class User
   def url
     feed.local? ? "/users/#{feed.author.username}" : feed.author.url
   end
+  
+  def twitter?
+    has_authorization?(:twitter)
+  end
+  
+  def twitter
+    get_authorization(:twitter)
+  end
+  
+  def facebook?
+    has_authorization?(:facebook)
+  end
+  
+  def facebook
+    get_authorization(:facebook)
+  end
+  
+  def has_authorization?(auth)
+    a = Authorization.first(:provider => auth.to_s, :user_id => self.id)
+    if a.nil?
+      return false
+    else
+      return true
+    end
+  end
+  
+  def get_authorization(auth)
+    Authorization.first(:provider => auth.to_s, :user_id => self.id)
+  end
 
   key :following_ids, Array
   many :following, :in => :following_ids, :class_name => 'Feed'
@@ -88,7 +117,7 @@ class User
     f = Feed.first(:remote_url => feed_url)
 
     # local feed?
-    if f.nil? and feed_url[0] == "/"
+    if f.nil? and feed_url[0].chr == "/"
       feed_id = feed_url[/^\/feeds\/(.+)$/,1]
       f = Feed.first(:id => feed_id)
     end
@@ -115,7 +144,7 @@ class User
       :page => opts[:page],
       :per_page => opts[:per_page]
     }
-    Update.where(:text => /^@#{username} /).order(['created_at', 'descending']).paginate(popts)
+    Update.where(:text => /^@#{username}\b/).order(['created_at', 'descending']).paginate(popts)
   end
 
   key :status
@@ -135,9 +164,25 @@ class User
     nil
   end
 
+  def reset_username(params)
+    self.username = params[:username]
+    author.username = params[:username]
+    return false unless save
+    author.save
+  end
+
+  def edit_user_profile(params)
+      author.name    = params[:name]
+      author.email   = params[:email]
+      author.website = params[:website]
+      author.bio     = params[:bio]
+      author.save
+  end
+
   private
 
   def create_feed()
+    self.author = Author.create :name => "", :username => username if author.nil?
     f = Feed.create(
       :author => author
     )

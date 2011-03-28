@@ -1,7 +1,7 @@
 !!! 5
 %html.no-js
-  != haml :_head, :locals => {:css => ['external']}
-  %body.external
+  != haml :_head
+  %body#home
     #main
       #header
         %h2#logo
@@ -27,13 +27,13 @@
             / %input{:name => "email"}
             /   %input{:type => "Submit", :value => "Sign up"}
 
-      #content
+      .content
         - if flash[:notice] || flash[:error]
           #flash
             = flash[:notice]
 
         #pitch
-          #col-1.col
+          %a#col-1.col{:href=>'/login'} 
             %h2.title
               Sign Up
             .content
@@ -77,7 +77,3 @@
                   Join the conversation
 
     != haml :footer
-
-    - content_for :javascript do
-      %script{:src => "/js/jquery.equalHeights.js"}
-      %script{:src => "/js/home.js"}
