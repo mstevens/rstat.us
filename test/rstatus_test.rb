@@ -46,14 +46,22 @@ class RstatusTest < MiniTest::Unit::TestCase
     assert_equal 200, page.status_code
   end
 
-  def test_user_follows_themselves_upon_create
+  def test_user_profile_redirect
     u = Factory(:user)
-    a = Factory(:authorization, :user => u)
+    url = "http://www.example.com/users/#{u.username}"
+    visit "/users/#{u.username.upcase}"
+    assert_equal url, page.current_url
+  end
 
-    log_in(u, a.uid)
+  def test_user_does_not_follow_self_upon_create
+    u = Factory(:user)
+    refute u.following? u.feed.url
+  end
 
-    visit "/users/#{u.username}/following"
-    assert_match u.username, page.body
+  def test_user_cannot_follow_self
+    u = Factory(:user)
+    u.follow! u.feed.url
+    refute u.following? u.feed.url
   end
 
   def test_user_makes_updates
@@ -64,9 +72,12 @@ class RstatusTest < MiniTest::Unit::TestCase
       :text => update_text
     }
     log_in(u, a.uid)
-    visit "/"
-    fill_in 'update-textarea', :with => update_text
-    click_button :'update-button'
+
+    VCR.use_cassette('publish_update') do
+      visit "/"
+      fill_in 'update-textarea', :with => update_text
+      click_button :'update-button'
+    end
 
     assert_match page.body, /#{update_text}/
   end
@@ -79,9 +90,12 @@ class RstatusTest < MiniTest::Unit::TestCase
       :text => update_text
     }
     log_in(u, a.uid)
-    visit "/"
-    fill_in 'update-textarea', :with => update_text
-    click_button :'update-button'
+
+    VCR.use_cassette('publish_short_update') do
+      visit "/"
+      fill_in 'update-textarea', :with => update_text
+      click_button :'update-button'
+    end
 
     refute_match page.body, /Your status is too short!/
   end
@@ -99,6 +113,49 @@ class RstatusTest < MiniTest::Unit::TestCase
 
     assert_match "@#{u.username}", page.body
   end
+
+  def test_user_can_see_replies_with_css_class_mentioned
+    u = Factory(:user)
+    a = Factory(:authorization, :user => u)
+
+    u2 = Factory(:user)
+    a2 = Factory(:authorization, :user => u2)
+    u2.feed.updates << Factory(:update, :text => "@#{u.username} Hey man.")
+    u.feed.updates << Factory(:update, :text => "some text @someone, @#{u2.username} Hey man.")
+    log_in(u, a.uid)
+    visit "/updates"
+    assert_match "class='hentry mention update'", page.body
+    
+    log_in(u2, a2.uid)
+    visit "/updates"
+    assert_match "class='hentry mention update'", page.body    
+  end
+
+  def test_user_stays_on_same_route_after_post_update
+    u = Factory(:user)
+    a = Factory(:authorization, :user => u)
+
+    log_in(u, a.uid)
+
+    visit "/updates"
+    fill_in "text", :with => "Teststring fuer die Ewigkeit ohne UTF-8 Charakter"
+    VCR.use_cassette('publish_to_hub') {click_button "Share"}
+
+    assert_match "/updates", page.current_url
+
+    visit "/replies"
+    fill_in "text", :with => "Bratwurst mit Pommes rot-weiss"
+    VCR.use_cassette('publish_to_hub') {click_button "Share"}
+
+    assert_match "/replies", page.current_url
+    
+    visit "/"
+    fill_in "text", :with => "Buy a test string. Your name in this string for only 1 Euro/character"
+    VCR.use_cassette('publish_to_hub') {click_button "Share"}
+
+    assert_match "/", page.current_url    
+  end
+
 
   def test_user_can_see_world
     u = Factory(:user)
@@ -123,9 +180,11 @@ class RstatusTest < MiniTest::Unit::TestCase
     click_link "Would you like to follow someone not on rstat.us?"
     assert_match "ostatus Sites", page.body
 
-    #this should really be mocked
-    fill_in 'url', :with => "http://identi.ca/api/statuses/user_timeline/396889.atom"
-    click_button "Follow"
+    VCR.use_cassette('subscribe_remote') do
+      fill_in 'url', :with => "http://identi.ca/api/statuses/user_timeline/396889.atom"
+      click_button "Follow"
+    end
+
     assert_match "Now following steveklabnik.", page.body
     assert "/", current_path
   end
@@ -154,7 +213,7 @@ class RstatusTest < MiniTest::Unit::TestCase
     log_in(u, a.uid)
     u.follow! u2.feed.url
 
-    visit "/users/#{u2.username}/following"
+    visit "/users/#{u.username}/following"
     click_button "unfollow-#{u2.feed.id}"
 
     assert_match "No longer following #{u2.username}", page.body
@@ -169,14 +228,14 @@ class RstatusTest < MiniTest::Unit::TestCase
 
     log_in(aardvark, a.uid)
 
-    visit "/users/#{leopard.username}"
-    click_button "follow-#{leopard.feed.id}"
-
     visit "/users/#{zebra.username}"
     click_button "follow-#{zebra.feed.id}"
 
+    visit "/users/#{leopard.username}"
+    click_button "follow-#{leopard.feed.id}"
+
     visit "/users/#{aardvark.username}/following"
-    assert_match /zebra.*aardvark/m, page.body
+    assert_match /leopard.*zebra/m, page.body
   end
 
   def test_user_following_paginates
@@ -263,265 +322,6 @@ class RstatusTest < MiniTest::Unit::TestCase
     assert_match page.body, /#{bio_text}/
   end
 
-  def test_user_update_profile_twitter_button
-    u = Factory(:user)
-    log_in_email(u)
-    visit "/users/#{u.username}/edit"
-  
-    assert_match page.body, /Add Twitter Account/
-  end
-  
-  def test_user_update_profile_facebook_button
-    u = Factory(:user)
-    log_in_email(u)
-    visit "/users/#{u.username}/edit"
-  
-    assert_match page.body, /Add Facebook Account/
-  end
-  
-  def test_user_profile_with_twitter
-    u = Factory(:user)
-    a = Factory(:authorization, :user => u, :nickname => "Awesomeo the Great")
-    log_in(u, a.uid)
-    visit "/users/#{u.username}/edit"
-  
-    assert_match page.body, /Awesomeo the Great/
-  end
-  
-  def test_user_profile_with_facebook
-    u = Factory(:user)
-    a = Factory(:authorization, :user => u, :provider => "facebook", :nickname => "Awesomeo the Great")
-    log_in_fb(u, a.uid)
-    visit "/users/#{u.username}/edit"
-  
-    assert_match page.body, /Awesomeo the Great/
-  end
-  
-  def no_twitter_login
-    u = Factory(:user)
-    log_in_email(u)
-    assert_match /Login successful/, page.body
-    assert_equal current_user, u
-  end
-  
-  def test_twitter_send_checkbox_present
-    u = Factory(:user)
-    a = Factory(:authorization, :user => u)
-    log_in(u, a.uid)
-  
-    assert_match page.body, /Twitter/
-    assert_equal find_field('tweet').checked?, true
-  end
-  
-  def test_facebook_send_checkbox_present
-    u = Factory(:user)
-    a = Factory(:authorization, :user => u, :provider => "facebook")
-    log_in_fb(u, a.uid)
-  
-    assert_match page.body, /Facebook/
-    assert_equal find_field('facebook').checked?, true
-  end
-  
-  def test_twitter_send
-    update_text = "Test Twitter Text"
-    Twitter.expects(:update)
-    u = Factory(:user)
-    a = Factory(:authorization, :user => u)
-    log_in(u, a.uid)
-  
-    fill_in "text", :with => update_text
-    check("tweet")
-    click_button "Share"
-  
-    assert_match /Update created/, page.body
-  end
-  
-  def test_facebook_send
-    update_text = "Test Facebook Text"
-    u = Factory(:user)
-    a = Factory(:authorization, :user => u, :provider => "facebook")
-    FbGraph::User.expects(:me).returns(mock(:feed! => nil))
-  
-    log_in_fb(u, a.uid)
-  
-    fill_in "text", :with => update_text
-    check("facebook")
-    click_button "Share"
-  
-    assert_match /Update created/, page.body
-  end
-  
-  def test_twitter_and_facebook_send
-    update_text = "Test Facebook and Twitter Text"
-    FbGraph::User.expects(:me).returns(mock(:feed! => nil))    
-    Twitter.expects(:update)
-  
-    u = Factory(:user)
-    Factory(:authorization, :user => u, :provider => "facebook")
-    a = Factory(:authorization, :user => u)
-  
-    log_in(u, a.uid)
-      
-    fill_in "text", :with => update_text
-    check("facebook")
-    check("tweet")
-    click_button "Share"
-  
-    assert_match /Update created/, page.body
-  end
-  
-  def test_twitter_no_send
-    update_text = "Test Twitter Text"
-    Twitter.expects(:update).never
-    u = Factory(:user)
-    a = Factory(:authorization, :user => u)
-    log_in(u, a.uid)
-  
-    fill_in "text", :with => update_text
-    uncheck("tweet")
-    click_button "Share"
-  
-    assert_match /Update created/, page.body
-  end
-  
-  def test_facebook_no_send
-    update_text = "Test Facebook Text"
-    FbGraph::User.expects(:me).never
-    u = Factory(:user)
-    a = Factory(:authorization, :user => u, :provider => "facebook")
-    log_in_fb(u, a.uid)
-  
-    fill_in "text", :with => update_text
-    uncheck("facebook")
-    click_button "Share"
-  
-    assert_match /Update created/, page.body
-  end
-  
-  def test_no_twitter_no_send
-    update_text = "Test Twitter Text"
-    Twitter.expects(:update).never
-    u = Factory(:user)
-    log_in_email(u)
-      
-    fill_in "text", :with => update_text
-    click_button "Share"
-  
-    assert_match /Update created/, page.body
-  end
-  
-  def test_no_facebook_no_send
-    update_text = "Test Facebook Text"
-    FbGraph::User.expects(:me).never
-    u = Factory(:user)
-    log_in_email(u)
-      
-    fill_in "text", :with => update_text
-    click_button "Share"
-  
-    assert_match /Update created/, page.body
-  end
-
-  def test_add_twitter_to_account
-    u = Factory(:user)
-    OmniAuth.config.add_mock(:twitter, {
-      :uid => "78654",
-      :user_info => {
-        :name => "Joe Public",
-        :nickname => u.username,
-        :urls => { :Website => "http://rstat.us" },
-        :description => "A description",
-        :image => "/images/something.png"
-      },
-      :credentials => {:token => "1111", :secret => "2222"}
-    })
-    log_in_email(u)
-    visit "/users/#{u.username}/edit"
-    click_button "Add Twitter Account"
-  
-    auth = Authorization.first(:provider => "twitter", :uid => 78654)
-    assert_equal "1111", auth.oauth_token
-    assert_equal "2222", auth.oauth_secret
-    assert_match "/users/#{u.username}/edit", page.current_url
-  end
-
-  def test_twitter_remove
-    u = Factory(:user)
-    a = Factory(:authorization, :user => u)
-    log_in(u, a.uid)
-    
-    visit "/users/#{u.username}/edit"
-    
-    assert_match /edit/, page.current_url
-    click_button "Remove"
-    
-    a = Authorization.first(:provider => "twitter", :user_id => u.id)
-    assert_equal a.nil?, true
-  end
-
-  def test_add_facebook_to_account
-    u = Factory(:user)
-    OmniAuth.config.add_mock(:facebook, {
-      :uid => 78654,
-      :user_info => {
-        :name => "Joe Public",
-        :email => "joe@public.com",
-        :nickname => u.username,
-        :urls => { :Website => "http://rstat.us" },
-        :description => "A description",
-        :image => "/images/something.png"
-      },
-      :credentials => {:token => "1111", :secret => "2222"}
-    })
-    log_in_email(u)
-    visit "/users/#{u.username}/edit"
-    click_button "Add Facebook Account"
-  
-    auth = Authorization.first(:provider => "facebook", :uid => 78654)
-    assert_equal "1111", auth.oauth_token
-    assert_equal "2222", auth.oauth_secret
-    assert_match "/users/#{u.username}/edit", page.current_url
-  end
-  
-  def test_facebook_remove
-    u = Factory(:user)
-    a = Factory(:authorization, :user => u, :provider => "facebook")
-    log_in_fb(u, a.uid)
-    
-    visit "/users/#{u.username}/edit"
-    
-    assert_match /edit/, page.current_url
-    click_button "Remove"
-    
-    a = Authorization.first(:provider => "facebook", :user_id => u.id)
-    assert_equal a.nil?, true
-  end
-
-  def test_facebook_username
-    new_user = Factory.build(:user, :username => 'profile.php?id=12345')
-    log_in_fb(new_user)
-    assert_match /users\/new/, page.current_url, "not on the new user page."
-  
-    fill_in "username", :with => "janepublic"
-    click_button "Finish Signup"
-    assert_match /Thanks! You're all signed up with janepublic for your username./, page.body
-    assert_match /\//, page.current_url
-    click_link "Logout"
-    log_in_fb(new_user)
-    assert_match /janepublic/, page.body
-  end
-
-  def test_existing_profile_php_rename_user
-    existing_user = Factory(:user, :username => 'profile.php?id=12345')
-    a = Factory(:authorization, :user => existing_user)
-    log_in(existing_user, a.uid)
-    click_link "reset_username"
-    assert_match /\/reset-username/, page.current_url
-    fill_in "username", :with => "janepublic"
-    click_button "Update"
-    assert_match /janepublic/, page.body
-  end
-
   def test_username_clash
     existing_user = Factory(:user, :username => "taken")
     new_user = Factory.build(:user, :username => 'taken')
@@ -580,6 +380,20 @@ class RstatusTest < MiniTest::Unit::TestCase
     assert_match "Next", page.body
   end
 
+  def test_users_browse_by_letter_paginates
+    visit "/users"
+   
+    49.times do
+      u2 = Factory(:user)
+    end
+    u2 = Factory(:user, :username => "uzzzzz")
+
+    click_link "U"
+    click_link "next_button"
+  
+    assert_match u2.username, page.body
+  end
+
   def test_users_browse_shows_latest_users
     aardvark = Factory(:user, :username => "aardvark", :created_at => Date.new(2010, 10, 23))
     zebra    = Factory(:user, :username => "zebra", :created_at => Date.new(2011, 10, 24))
@@ -595,7 +409,7 @@ class RstatusTest < MiniTest::Unit::TestCase
     alpha = Factory(:user, :username => "alpha")
     a = Factory(:authorization, :user => alpha)
 
-    ["apple", "beta", "BANANAS"].each do |u|
+    ["aardvark", "beta", "BANANAS"].each do |u|
       u2 = Factory(:user, :username => u)
     end
 
@@ -604,9 +418,9 @@ class RstatusTest < MiniTest::Unit::TestCase
     visit "/users"
     click_link "B"
 
-    assert has_link? "beta"
-    assert has_link? "BANANAS"
-    refute_match "apple", page.body
+    assert has_link? "(beta)"
+    assert has_link? "(BANANAS)"
+    refute_match "(aardvark)", page.body
   end
 
   def test_users_browse_by_non_letter
@@ -639,24 +453,6 @@ class RstatusTest < MiniTest::Unit::TestCase
 
   end
 
-  def test_user_signup_twitter
-    Author.any_instance.stubs(:valid_gravatar?).returns(:false)
-    omni_mock("twit")
-    visit '/auth/twitter'
-
-    assert_match /Confirm account information/, page.body
-    assert_match /\/users\/confirm/, page.current_url
-
-    fill_in "username", :with => "new_user"
-    fill_in "email", :with => "new_user@email.com"
-    click_button "Finish Signup"
-
-    u = User.first(:username => "new_user")
-    refute u.nil?
-    assert_equal u.email, "new_user@email.com"
-
-  end
-
   def test_user_signup
     u = User.first(:username => "new_user")
     assert u.nil?
@@ -671,16 +467,320 @@ class RstatusTest < MiniTest::Unit::TestCase
     assert User.authenticate("new_user", "mypassword")
   end
   
-  def test_user_token_migration
-    u = Factory(:user)
-    a = Factory(:authorization, :user => u, :oauth_token => nil, :oauth_secret => nil, :nickname => nil)
-    log_in(u, a.uid)
+
+  def test_no_user_found_forgot_password
+    visit "/forgot_password"
+    fill_in "email", :with => "someone@somewhere.com"
+    click_button "Send"
     
-    assert_equal "1234", u.twitter.oauth_token
-    assert_equal "4567", u.twitter.oauth_secret
-    assert_equal u.username, u.twitter.nickname
+    assert_match "Your account could not be found, please check your email and try again.", page.body
+  end
+  
+  def test_forgot_password_token_set
+    u = Factory(:user, :email => "someone@somewhere.com")
+    Notifier.expects(:send_forgot_password_notification)
+    assert_nil u.perishable_token
     
+    visit "/forgot_password"
+    fill_in "email", :with => "someone@somewhere.com"
+    click_button "Send"
+    
+    u = User.first(:email => "someone@somewhere.com")
+    refute u.perishable_token.nil?
+    assert_match "A link to reset your password has been sent to someone@somewhere.com.", page.body
+  end
+  
+  def test_correct_reset_password_link
+    u = Factory(:user, :email => "someone@somewhere.com")
+    token = u.set_password_reset_token
+    visit "/reset_password/#{token}"
+    
+    assert_match "Password Reset", page.body
+    assert_match "/reset_password/#{token}", page.current_url
+  end
+  
+  def test_incorrect_reset_password_link
+    visit "/reset_password/abcd"
+    
+    assert_match "Your link is no longer valid, please request a new one.", page.body
+    assert_match "/forgot_password", page.current_url
+  end
+  
+  def test_expired_reset_password_link
+    u = Factory(:user, :email => "someone@somewhere.com")
+    token = u.set_password_reset_token
+    u.password_reset_sent = 5.days.ago
+    u.save
+    
+    visit "/reset_password/#{token}"
+    
+    assert_match "Your link is no longer valid, please request a new one.", page.body
+    assert_match "/forgot_password", page.current_url
+  end
+  
+  def test_reset_password_no_password_present
+    u = Factory(:user, :email => "someone@somewhere.com")
+    token = u.set_password_reset_token
+    visit "/reset_password/#{token}"
+    
+    fill_in "password", :with => ""
+    click_button "Reset"
+    
+    assert_match "Password must be present", page.body
+    assert_match "/reset_password/#{token}", page.current_url
+  end
+  
+  def test_reset_password_passwords_dont_match
+    u = Factory(:user, :email => "someone@somewhere.com")
+    token = u.set_password_reset_token
+    visit "/reset_password/#{token}"
+    
+    fill_in "password", :with => "password"
+    fill_in "password_confirm", :with => "passrd"
+    click_button "Reset"
+    
+    assert_match "Passwords do not match", page.body
+    assert_match "/reset_password/#{token}", page.current_url
+  end
+  
+  def test_successful_password_reset
+    u = Factory(:user, :email => "someone@somewhere.com")
+    token = u.set_password_reset_token
+    visit "/reset_password/#{token}"
+    
+    fill_in "password", :with => "password"
+    fill_in "password_confirm", :with => "password"
+    click_button "Reset"
+    
+    assert_match "Password successfully set", page.body
+    assert_match "/", page.current_url
   end
 
+  def test_user_password_reset
+    u = Factory(:user, :email => "some@email.com")
+    u.password = "password"
+    u.save
+    pass_hash = u.hashed_password
+    log_in_email(u)
+
+    visit "/users/password_reset"
+    assert_match "Password Reset", page.body
+    
+    fill_in "password", :with => "password"
+    fill_in "password_confirm", :with => "password"
+    click_button "Reset"
+    
+    u = User.first(:email => "some@email.com")
+    assert u.hashed_password != pass_hash
+    assert_match "Password successfully set", page.body
+    assert_match "/", page.current_url
+  end
+
+  def test_user_password_reset_not_logged_in
+    visit "/users/password_reset"
+    
+    assert_match "/forgot_password", page.current_url
+  end
+  
+  def test_user_password_reset_no_email
+    user = Factory(:user, :email => nil)
+    a = Factory(:authorization, :user => user)
+    log_in(user, a.uid)
+    
+    visit "/users/password_reset"
+    
+    assert_match "Set Password", page.body
+    
+    fill_in "email", :with => "some@email.com"
+    fill_in "password", :with => "password"
+    fill_in "password_confirm", :with => "password"
+    click_button "Reset"
+    
+    u = User.first(:id => user.id)
+    refute u.hashed_password.nil?
+    refute u.email.nil?
+    assert_match "Password successfully set", page.body
+    assert_match "/", page.current_url
+  end
+  
+  def test_user_password_reset_email_needed
+    u = Factory(:user, :email => nil)
+    a = Factory(:authorization, :user => u)
+    log_in(u, a.uid)
+    
+    visit "/users/password_reset"
+    
+    assert_match "Set Password", page.body
+    
+    fill_in "password", :with => "password"
+    fill_in "password_confirm", :with => "password"
+    click_button "Reset"
+    
+    assert_match "Email must be provided", page.body
+    assert_match "/users/password_reset", page.current_url
+  end
+  
+  def test_user_password_reset_email_does_not_show
+    u = Factory(:user, :email => "something@something.com")
+    a = Factory(:authorization, :user => u)
+    log_in(u, a.uid)
+    
+    visit "/users/password_reset"
+    
+    assert_equal page.has_selector?("input[name=email]"), false
+  end
+  
+  def test_user_password_reset_passwords_dont_match
+    u = Factory(:user, :email => "some@email.com")
+    log_in_email(u)
+  
+    visit "/users/password_reset"
+    
+    fill_in "password", :with => "password"
+    fill_in "password_confirm", :with => "pasord"
+    click_button "Reset"
+    
+    assert_match "Passwords do not match", page.body
+    assert_match "/users/password_reset", page.current_url
+  end
+  
+  def test_user_password_reset_no_password_present
+    u = Factory(:user, :email => "some@email.com")
+    log_in_email(u)
+  
+    visit "/users/password_reset"
+    
+    click_button "Reset"
+    
+    assert_match "Password must be present", page.body
+    assert_match "/users/password_reset", page.current_url
+  end
+  
+  def test_following_displays_username_logged_in
+    u = Factory(:user, :username => "dfnkt")
+    a = Factory(:authorization, :user => u)
+
+    log_in(u, a.uid)
+
+    visit "/users/#{u.username}/following"
+    assert_match "#{u.username} is following", page.body
+
+  end
+
+  def test_following_displays_username_logged_out
+    u = Factory(:user, :username => "dfnkt")
+
+    visit "/users/#{u.username}/following"
+    assert_match "#{u.username} is following", page.body
+  end
+
+  def test_user_password_reset
+    u = Factory(:user, :email => "some@email.com")
+    u.password = "password"
+    u.save
+    pass_hash = u.hashed_password
+    log_in_email(u)
+
+    visit "/users/password_reset"
+    assert_match "Password Reset", page.body
+    
+    fill_in "password", :with => "password"
+    fill_in "password_confirm", :with => "password"
+    click_button "Reset"
+    
+    u = User.first(:email => "some@email.com")
+    assert u.hashed_password != pass_hash
+    assert_match "Password successfully set", page.body
+    assert_match "/", page.current_url
+  end
+
+  def test_user_password_reset_not_logged_in
+    visit "/users/password_reset"
+    
+    assert_match "/forgot_password", page.current_url
+  end
+  
+  def test_user_password_reset_no_email
+    user = Factory(:user, :email => nil)
+    a = Factory(:authorization, :user => user)
+    log_in(user, a.uid)
+    
+    visit "/users/password_reset"
+    
+    assert_match "Set Password", page.body
+    
+    fill_in "email", :with => "some@email.com"
+    fill_in "password", :with => "password"
+    fill_in "password_confirm", :with => "password"
+    click_button "Reset"
+    
+    u = User.first(:id => user.id)
+    refute u.hashed_password.nil?
+    refute u.email.nil?
+    assert_match "Password successfully set", page.body
+    assert_match "/", page.current_url
+  end
+  
+  def test_user_password_reset_email_needed
+    u = Factory(:user, :email => nil)
+    a = Factory(:authorization, :user => u)
+    log_in(u, a.uid)
+    
+    visit "/users/password_reset"
+    
+    assert_match "Set Password", page.body
+    
+    fill_in "password", :with => "password"
+    fill_in "password_confirm", :with => "password"
+    click_button "Reset"
+    
+    assert_match "Email must be provided", page.body
+    assert_match "/users/password_reset", page.current_url
+  end
+  
+  def test_user_password_reset_passwords_dont_match
+    u = Factory(:user, :email => "some@email.com")
+    log_in_email(u)
+  
+    visit "/users/password_reset"
+    
+    fill_in "password", :with => "password"
+    fill_in "password_confirm", :with => "pasord"
+    click_button "Reset"
+    
+    assert_match "Passwords do not match", page.body
+    assert_match "/users/password_reset", page.current_url
+  end
+  
+  def test_user_password_reset_no_password_present
+    u = Factory(:user, :email => "some@email.com")
+    log_in_email(u)
+  
+    visit "/users/password_reset"
+    
+    click_button "Reset"
+    
+    assert_match "Password must be present", page.body
+    assert_match "/users/password_reset", page.current_url
+  end
+  
+  def test_reset_password_link_for_profile_no_password
+    u = Factory(:user, :email => "some@email.com")
+    log_in_email(u)
+
+    visit "/users/#{u.username}/edit"
+
+    assert_match "Set Password", page.body
+  end
+  
+  def test_reset_password_link_for_profile
+    u = Factory(:user, :email => "some@email.com", :hashed_password => "blerg")
+    log_in_email(u)
+
+    visit "/users/#{u.username}/edit"
+
+    assert_match "Reset Password", page.body
+  end
+  
 end
 

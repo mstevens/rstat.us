@@ -6,6 +6,54 @@ class Rstatus
   get '/users/new' do
     haml :"users/new"
   end
+  
+  # Password reset for users that are currently logged in. If a user does not
+  # have an email address they are prompted to enter one
+  get '/users/password_reset' do
+    if logged_in?
+      haml :"users/password_reset"
+    else
+      redirect "/forgot_password"
+    end
+  end
+
+  
+  # Submitted passwords are checked for length and confirmation. If the user
+  # does not have an email address they are required to provide one. Once the
+  # password has been reset the user is redirected to /
+  post '/users/password_reset' do
+    if logged_in?
+      # Repeated in user_handler /reset_password/:token, make sure any changes
+      # are in sync
+      if params[:password].size == 0
+        flash[:notice] = "Password must be present"
+        redirect "/users/password_reset"
+        return
+      end
+      if params[:password] != params[:password_confirm]
+        flash[:notice] = "Passwords do not match"
+        redirect "/users/password_reset"
+        return
+      end
+      
+      if current_user.email.nil? 
+        if params[:email].empty?
+          flash[:notice] = "Email must be provided"
+          redirect "/users/password_reset"
+          return
+        else
+          current_user.email = params[:email]
+        end
+      end
+      
+      current_user.password = params[:password]
+      current_user.save
+      flash[:notice] = "Password successfully set"
+      redirect "/"
+    else
+      redirect "/forgot_password"
+    end
+  end
 
   get '/users' do
     set_params_page
@@ -27,7 +75,7 @@ class Rstatus
 
     # Sort users alphabetically when filtering by letter
     if params[:letter]
-      @users = @users.sort(:username.desc)
+      @users = @users.sort(:username)
     else
       @users = @users.sort(:created_at.desc)
     end
@@ -35,7 +83,19 @@ class Rstatus
     @users = @users.paginate(:page => params[:page], :per_page => params[:per_page])
 
     @next_page = nil
-    set_next_prev_page
+    
+    # If this would just accept params as is I wouldn't have to do this
+    if params[:letter]
+      @next_page = "?#{Rack::Utils.build_query :page => params[:page] + 1, :letter => params[:letter]}"
+      
+      if params[:page] > 1
+        @prev_page = "?#{Rack::Utils.build_query :page => params[:page] + 1, :letter => params[:letter]}"
+      else
+        @prev_page = nil
+      end
+    else
+      set_next_prev_page
+    end
 
     haml :"users/index"
   end
@@ -71,12 +131,19 @@ class Rstatus
   end
 
   # show user profile
-  get "/users/:slug" do
+  get "/users/:username" do
     set_params_page
 
-    user = User.first :username => params[:slug]
+    user = User.first :username => params[:username]
     if user.nil?
-      raise Sinatra::NotFound
+      #check for a case insensitive match and then redirect to the correct address
+      username = Regexp.escape(params[:username])
+      user = User.first :username => /^#{username}$/i
+      if user.nil?
+        raise Sinatra::NotFound
+      else
+        redirect "users/#{user.username}"
+      end
     end
     @author = user.author
     #XXX: the following doesn't work for some reasond
@@ -110,52 +177,59 @@ class Rstatus
       else
         flash[:notice] = "Profile could not be saved!"
       end
-      redirect "/users/#{params[:username]}"
-
-    else
-      redirect "/users/#{params[:username]}"
     end
+    redirect "/users/#{params[:username]}"
   end
 
   # an alias for the route of the feed
-  get "/users/:name/feed" do
-    feed = User.first(:username => params[:name]).feed
+  get "/users/:username/feed" do
+    feed = User.first(:username => params[:username]).feed
     redirect "/feeds/#{feed.id}.atom"
   end
 
   # This lets us see who is following.
-  get '/users/:name/following' do
+  get '/users/:username/following' do
     set_params_page
 
-    feeds = User.first(:username => params[:name]).following
+    feeds = User.first(:username => params[:username]).following
 
+    @user = User.first(:username => params[:username])
     @users = feeds.paginate(:page => params[:page], :per_page => params[:per_page], :order => :id.desc).map{|f| f.author.user}
 
     set_next_prev_page
     @next_page = nil unless params[:page]*params[:per_page] < feeds.count
 
-    haml :"users/list", :locals => {:title => "Following"}
+    #build title
+    title = ""
+    title << "#{@user.username} is following"
+    
+    haml :"users/list", :locals => {:title => title}
   end
 
-  get '/users/:name/following.json' do
+  get '/users/:username/following.json' do
     set_params_page
 
-    users = User.first(:username => params[:name]).following
+    users = User.first(:username => params[:username]).following
     authors = users.map { |user| user.author }
     authors.to_a.to_json
   end
 
-  get '/users/:name/followers' do
+  get '/users/:username/followers' do
     set_params_page
 
-    feeds = User.first(:username => params[:name]).followers
-
+    feeds = User.first(:username => params[:username]).followers
+    
+    @user = User.first(:username => params[:username])
     @users = feeds.paginate(:page => params[:page], :per_page => params[:per_page], :order => :id.desc).map{|f| f.author.user}
 
     set_next_prev_page
     @next_page = nil unless params[:page]*params[:per_page] < feeds.count
 
-    haml :"users/list", :locals => {:title => "Followers"}
+    #build title
+    title = ""
+    title << "#{@user.username}'s followers"
+
+    haml :"users/list", :locals => {:title => title}
   end
   
   delete '/users/:username/auth/:provider' do

@@ -1,15 +1,12 @@
 embed_assets: on
 gzip_assets: off
+compress_assets: on
 
 stylesheets:
   screen:
-    - public/assets/s/screen.css
+    - public/assets/src/n.css
     
 javascripts:
   app:
-    - public/js/jquery.equalHeights.js
-    - public/js/home.js
-    - public/js/app.js
-    - public/js/update.js
-    - public/js/updates.show.js
-    - public/js/users.js
+    - public/js/lib/jquery.equalHeights.js
+    - public/assets/src/main.js

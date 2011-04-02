@@ -23,7 +23,7 @@ class Rstatus
                    :twitter => do_tweet,
                    :facebook => do_facebook)
 
-    # and entry to user's feed
+    # add entry to user's feed
     current_user.feed.updates << u
     current_user.feed.save
     current_user.save
@@ -38,8 +38,12 @@ class Rstatus
     else
       flash[:notice] = "Update created."
     end
-
-    redirect "/"
+    
+    if request.referrer
+      redirect request.referrer
+    else
+      redirect "/"
+    end
   end
 
   get '/updates/:id' do
@@ -57,7 +61,7 @@ class Rstatus
       flash[:notice] = "Update Baleeted!"
       redirect "/"
     else
-      flash[:notice] = "I'm afraid I can't let you do that, " + current_user.name + "."
+      flash[:notice] = "I'm afraid I can't let you do that, #{current_user.name}."
       redirect back
     end
   end

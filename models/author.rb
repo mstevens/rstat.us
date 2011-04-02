@@ -1,5 +1,7 @@
 class Author
-  DEFAULT_AVATAR = "/images/avatar.png"
+  DEFAULT_AVATAR = "http://rstat.us/images/avatar.png"
+  ENCODED_DEFAULT_AVATAR = URI.encode_www_form_component(DEFAULT_AVATAR)
+
   GRAVATAR_HOST  = "gravatar.com"
   
   include MongoMapper::Document
@@ -16,7 +18,8 @@ class Author
   
  # The url of their profile page
   key :remote_url, String
-
+  
+  # This takes results from an omniauth reponse and generates an author
   def self.create_from_hash!(hsh)
     create!(
       :name => hsh['user_info']['name'],
@@ -34,10 +37,11 @@ class Author
   end
 
   def avatar_url
-    return image_url    if image_url
-    return gravatar_url if valid_gravatar?
+    return image_url      if image_url
+    return DEFAULT_AVATAR if email.nil?
 
-    DEFAULT_AVATAR
+    # if the gravatar doesn't exist, gravatar will use a default that we provide
+    gravatar_url
   end
 
   def display_name
@@ -45,28 +49,13 @@ class Author
     name
   end
 
-  def valid_gravatar?
-    return unless email
-
-    begin
-      ret = nil
-      Net::HTTP.start(GRAVATAR_HOST, 80) do |http|
-        # Use HEAD instead of GET for SPEED!
-        ret = http.head(gravatar_path).is_a?(Net::HTTPOK)
-      end
-      return ret
-    rescue
-      # No internet connection
-      false
-    end
-  end
-
   def gravatar_url
-    return DEFAULT_AVATAR if email.nil?
     "http://#{GRAVATAR_HOST}#{gravatar_path}"
   end
 
+  # these query parameters are described at:
+  #   <http://en.gravatar.com/site/implement/images/#default-image>
   def gravatar_path
-    "/avatar/#{Digest::MD5.hexdigest(email)}?s=48&r=r&d=404"
+    "/avatar/#{Digest::MD5.hexdigest(email)}?s=48&r=r&d=#{ENCODED_DEFAULT_AVATAR}"
   end
 end
